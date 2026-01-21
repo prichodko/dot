@@ -100,7 +100,15 @@ async function main() {
     });
   }
 
+  // show legend
   p.log.message(c.dim(`~/.dotfiles (${DOTFILES_REPO})`));
+  p.log.message("");
+  p.log.message(
+    c.dim(
+      `${statusIcon.synced} synced   ${statusIcon.local} local changes   ${statusIcon.remote} remote changes   ${statusIcon.conflict} conflict   ${statusIcon.unlinked} not linked`
+    )
+  );
+  p.log.message("");
 
   // combined status + selection
   const selected = await p.groupMultiselect({
