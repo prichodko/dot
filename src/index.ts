@@ -86,7 +86,7 @@ async function main() {
     options[cat.name] = catFiles.map((f) => {
       const icon = statusIcon[f.status];
       const hint = getHint(f.status, inProject);
-      
+
       // pre-select changed files
       if (f.status !== "synced") {
         initialValues.push(f.path);
@@ -105,7 +105,7 @@ async function main() {
   p.log.message("");
   p.log.message(
     c.dim(
-      `${statusIcon.synced} synced   ${statusIcon.local} local changes   ${statusIcon.remote} remote changes   ${statusIcon.conflict} conflict   ${statusIcon.unlinked} not linked`
+      `${statusIcon.synced} synced   ${statusIcon.local} local   ${statusIcon.remote} remote   ${statusIcon.conflict} conflict   ${statusIcon.unlinked} unlinked`
     )
   );
   p.log.message("");
@@ -123,6 +123,9 @@ async function main() {
     return;
   }
 
+  // selected files
+  const selectedFiles = selected as string[];
+
   // categorize selected files by action
   const toPush: string[] = [];
   const toPull: string[] = [];
@@ -130,7 +133,7 @@ async function main() {
   const conflicts: string[] = [];
   const toCopy: string[] = [];
 
-  for (const path of selected as string[]) {
+  for (const path of selectedFiles) {
     const file = files.find((f) => f.path === path);
     if (!file) continue;
 
