@@ -1,0 +1,50 @@
+diff --git a/dist/index.d.cts b/dist/index.d.cts
+index b31a9ed1cc2bf4bb48db9b91ae2dca9e7a72a8e8..baee64c781915228470baf40c9cd0282ff13ba47 100644
+--- a/dist/index.d.cts
++++ b/dist/index.d.cts
+@@ -81,6 +81,7 @@ interface GroupMultiSelectOptions<Value> {
+     required?: boolean;
+     cursorAt?: Value;
+     selectableGroups?: boolean;
++    groupSpacing?: number;
+ }
+ declare const groupMultiselect: <Value>(opts: GroupMultiSelectOptions<Value>) => Promise<symbol | Value[]>;
+ declare const note: (message?: string, title?: string) => void;
+diff --git a/dist/index.d.mts b/dist/index.d.mts
+index b31a9ed1cc2bf4bb48db9b91ae2dca9e7a72a8e8..baee64c781915228470baf40c9cd0282ff13ba47 100644
+--- a/dist/index.d.mts
++++ b/dist/index.d.mts
+@@ -81,6 +81,7 @@ interface GroupMultiSelectOptions<Value> {
+     required?: boolean;
+     cursorAt?: Value;
+     selectableGroups?: boolean;
++    groupSpacing?: number;
+ }
+ declare const groupMultiselect: <Value>(opts: GroupMultiSelectOptions<Value>) => Promise<symbol | Value[]>;
+ declare const note: (message?: string, title?: string) => void;
+diff --git a/dist/index.d.ts b/dist/index.d.ts
+index b31a9ed1cc2bf4bb48db9b91ae2dca9e7a72a8e8..baee64c781915228470baf40c9cd0282ff13ba47 100644
+--- a/dist/index.d.ts
++++ b/dist/index.d.ts
+@@ -81,6 +81,7 @@ interface GroupMultiSelectOptions<Value> {
+     required?: boolean;
+     cursorAt?: Value;
+     selectableGroups?: boolean;
++    groupSpacing?: number;
+ }
+ declare const groupMultiselect: <Value>(opts: GroupMultiSelectOptions<Value>) => Promise<symbol | Value[]>;
+ declare const note: (message?: string, title?: string) => void;
+diff --git a/dist/index.mjs b/dist/index.mjs
+index b55d77ff9a3cca0c706025f33e923ecd2db5ad91..a1320e920ec179ecbc6e0c6a1ae3d8cd36365d82 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -43,7 +43,8 @@ ${s}
+ `}default:return`${r}${e.cyan(o)}  ${G({options:this.options,cursor:this.cursor,maxItems:t.maxItems,style:i}).join(`
+ ${e.cyan(o)}  `)}
+ ${e.cyan(d)}
+-`}}}).prompt()},be=t=>{const{selectableGroups:n=!0}=t,r=(i,s,c=[])=>{const a=i.label??String(i.value),l=typeof i.group=="string",$=l&&(c[c.indexOf(i)+1]??{group:!0}),g=l&&$.group===!0,p=l?n?`${g?d:o} `:"  ":"";if(s==="active")return`${e.dim(p)}${e.cyan(A)} ${a} ${i.hint?e.dim(`(${i.hint})`):""}`;if(s==="group-active")return`${p}${e.cyan(A)} ${e.dim(a)}`;if(s==="group-active-selected")return`${p}${e.green(T)} ${e.dim(a)}`;if(s==="selected"){const f=l||n?e.green(T):"";return`${e.dim(p)}${f} ${e.dim(a)} ${i.hint?e.dim(`(${i.hint})`):""}`}if(s==="cancelled")return`${e.strikethrough(e.dim(a))}`;if(s==="active-selected")return`${e.dim(p)}${e.green(T)} ${a} ${i.hint?e.dim(`(${i.hint})`):""}`;if(s==="submitted")return`${e.dim(a)}`;const v=l||n?e.dim(F):"";return`${e.dim(p)}${v} ${e.dim(a)}`};return new se({options:t.options,initialValues:t.initialValues,required:t.required??!0,cursorAt:t.cursorAt,selectableGroups:n,validate(i){if(this.required&&i.length===0)return`Please select at least one option.
++`}}}).prompt()},be=t=>{const{selectableGroups:n=!0,groupSpacing:gs=0}=t,r=(i,s,c=[])=>{const a=i.label??String(i.value),l=typeof i.group=="string",$=l&&(c[c.indexOf(i)+1]??{group:!0}),g=l&&$.group===!0,p=l?n?`${g?d:o} `:"  ":"";let sp="";if(gs>0&&!l){const spt=`
++${e.cyan(o)}`;sp=`${spt.repeat(gs)}  `}if(s==="active")return`${sp}${e.dim(p)}${e.cyan(A)} ${a} ${i.hint?e.dim(`(${i.hint})`):""}`;if(s==="group-active")return`${sp}${p}${e.cyan(A)} ${e.dim(a)}`;if(s==="group-active-selected")return`${sp}${p}${e.green(T)} ${e.dim(a)}`;if(s==="selected"){const f=l||n?e.green(T):"";return`${sp}${e.dim(p)}${f} ${e.dim(a)} ${i.hint?e.dim(`(${i.hint})`):""}`}if(s==="cancelled")return`${e.strikethrough(e.dim(a))}`;if(s==="active-selected")return`${sp}${e.dim(p)}${e.green(T)} ${a} ${i.hint?e.dim(`(${i.hint})`):""}`;if(s==="submitted")return`${e.dim(a)}`;const v=l||n?e.dim(F):"";return`${sp}${e.dim(p)}${v} ${e.dim(a)}`};return new se({options:t.options,initialValues:t.initialValues,required:t.required??!0,cursorAt:t.cursorAt,selectableGroups:n,validate(i){if(this.required&&i.length===0)return`Please select at least one option.
+ ${e.reset(e.dim(`Press ${e.gray(e.bgWhite(e.inverse(" space ")))} to select, ${e.gray(e.bgWhite(e.inverse(" enter ")))} to submit`))}`},render(){const i=`${e.gray(o)}
+ ${b(this.state)}  ${t.message}
+ `;switch(this.state){case"submit":return`${i}${e.gray(o)}  ${this.options.filter(({value:s})=>this.value.includes(s)).map(s=>r(s,"submitted")).join(e.dim(", "))}`;case"cancel":{const s=this.options.filter(({value:c})=>this.value.includes(c)).map(c=>r(c,"cancelled")).join(e.dim(", "));return`${i}${e.gray(o)}  ${s.trim()?`${s}

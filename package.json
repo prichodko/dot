@@ -18,5 +18,8 @@
   "dependencies": {
     "@clack/prompts": "0.11.0",
     "picocolors": "^1.1.1"
+  },
+  "patchedDependencies": {
+    "@clack/prompts@0.11.0": "patches/@clack%2Fprompts@0.11.0.patch"
   }
 }

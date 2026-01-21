@@ -116,6 +116,7 @@ async function main() {
     options,
     initialValues,
     required: false,
+    groupSpacing: 1,
   });
 
   if (p.isCancel(selected) || !selected || selected.length === 0) {
