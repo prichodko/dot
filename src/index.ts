@@ -24,15 +24,45 @@ const statusIcon: Record<FileStatus, string> = {
   synced: c.green("✓"),
   local: c.yellow("↑"),
   remote: c.blue("↓"),
-  conflict: c.red("!"),
+  conflict: c.red("⚡"),
   unlinked: c.dim("○"),
 };
+
+type Mode = "global" | "local";
 
 async function main() {
   console.clear();
   p.intro(c.bgCyan(c.black(" dot ")));
 
-  // check if repo exists, clone if not
+  // detect context: are we in a project directory?
+  const cwd = process.cwd();
+  const isInProject = cwd !== HOME && !cwd.startsWith(DOTFILES_DIR);
+  const projectName = isInProject ? cwd.split("/").pop() : undefined;
+
+  // prompt for mode with auto-detected default
+  const mode = await p.select({
+    message: "Sync mode",
+    options: [
+      {
+        value: "global" as const,
+        label: "Global",
+        hint: "symlink to ~",
+      },
+      {
+        value: "local" as const,
+        label: "Local",
+        hint: isInProject ? `copy to ${projectName}` : "copy to cwd",
+      },
+    ],
+    initialValue: (isInProject ? "local" : "global") as Mode,
+  });
+
+  if (p.isCancel(mode)) {
+    p.outro(c.dim("Cancelled"));
+    return;
+  }
+
+  // ensure repo is cloned
   if (!(await isRepoCloned())) {
     const s = p.spinner();
     s.start(`Cloning ${DOTFILES_REPO}...`);
@@ -44,15 +74,29 @@ async function main() {
     s.stop(c.green("Cloned dotfiles"));
   }
 
-  // get status
+  // branch into mode-specific flow
+  if (mode === "global") {
+    await runGlobalMode();
+  } else {
+    await runLocalMode(cwd);
+  }
+}
+
+// =============================================================================
+// GLOBAL MODE: Symlink dotfiles to ~
+// =============================================================================
+
+async function runGlobalMode() {
   const s = p.spinner();
   s.start("Checking status...");
-  const files = await getAllTrackedFiles();
+
+  // get files comparing ~ vs repo
+  const files = await getAllTrackedFiles(HOME);
+
+  // update statuses based on git remote changes
   const remoteChanges = await getRemoteChanges();
   const localChanges = await getLocalChanges();
-  s.stop("Status loaded");
 
-  // update file statuses based on git
   for (const f of files) {
     if (remoteChanges.includes(f.path) && localChanges.includes(f.path)) {
       f.status = "conflict";
@@ -63,19 +107,17 @@ async function main() {
     }
   }
 
-  // check if in a project (not home)
-  const cwd = process.cwd();
-  const inProject = cwd !== HOME && !cwd.startsWith(DOTFILES_DIR);
+  s.stop("Status loaded");
 
   // check if all synced
   const hasChanges = files.some((f) => f.status !== "synced");
   if (!hasChanges) {
     p.log.success("Everything up to date!");
-    p.outro(c.dim(`~/.dotfiles (${DOTFILES_REPO})`));
+    p.outro(c.dim(`~/.dotfiles`));
     return;
   }
 
-  // build options with status icons, pre-select changed files
+  // build options grouped by category
   const options: Record<string, { value: string; label: string; hint?: string }[]> = {};
   const initialValues: string[] = [];
 
@@ -85,9 +127,8 @@ async function main() {
 
     options[cat.name] = catFiles.map((f) => {
       const icon = statusIcon[f.status];
-      const hint = getHint(f.status, inProject);
 
-      // pre-select changed files
+      // pre-select files that need action
       if (f.status !== "synced") {
         initialValues.push(f.path);
       }
@@ -95,22 +136,19 @@ async function main() {
       return {
         value: f.path,
         label: `${icon} ${f.path}`,
-        hint,
+        hint: getGlobalHint(f.status),
       };
     });
   }
 
   // show legend
-  p.log.message(c.dim(`~/.dotfiles (${DOTFILES_REPO})`));
-  p.log.message("");
   p.log.message(
     c.dim(
-      `${statusIcon.synced} synced   ${statusIcon.local} local   ${statusIcon.remote} remote   ${statusIcon.conflict} conflict   ${statusIcon.unlinked} unlinked`
+      `${statusIcon.synced} synced  ${statusIcon.local} push  ${statusIcon.remote} pull  ${statusIcon.conflict} conflict  ${statusIcon.unlinked} link`
     )
   );
-  p.log.message("");
 
-  // combined status + selection
+  // file selection
   const selected = await p.groupMultiselect({
     message: "Select files to sync",
     options,
@@ -124,68 +162,55 @@ async function main() {
     return;
   }
 
-  // selected files
   const selectedFiles = selected as string[];
 
-  // categorize selected files by action
+  // categorize by action
   const toPush: string[] = [];
   const toPull: string[] = [];
   const toLink: string[] = [];
-  const conflicts: string[] = [];
-  const toCopy: string[] = [];
 
   for (const path of selectedFiles) {
     const file = files.find((f) => f.path === path);
     if (!file) continue;
 
-    if (file.status === "local") {
-      if (inProject) {
-        toCopy.push(path);
-      } else {
+    switch (file.status) {
+      case "local":
         toPush.push(path);
-      }
-    } else if (file.status === "remote") {
-      toPull.push(path);
-    } else if (file.status === "unlinked") {
-      if (inProject) {
-        toCopy.push(path);
-      } else {
+        break;
+      case "remote":
+        toPull.push(path);
+        break;
+      case "unlinked":
         toLink.push(path);
-      }
-    } else if (file.status === "conflict") {
-      conflicts.push(path);
+        break;
+      case "conflict":
+        // ask user for each conflict
+        const action = await p.select({
+          message: `${c.red("⚡")} ${path} — keep which version?`,
+          options: [
+            { value: "push", label: "Local", hint: "push to repo" },
+            { value: "pull", label: "Remote", hint: "pull from repo" },
+            { value: "skip", label: "Skip" },
+          ],
+        });
+        if (p.isCancel(action)) continue;
+        if (action === "push") toPush.push(path);
+        if (action === "pull") toPull.push(path);
+        break;
     }
   }
 
-  // handle conflicts - ask for each
-  for (const path of conflicts) {
-    const action = await p.select({
-      message: `${c.red("!")} ${path} has conflicts. What to do?`,
-      options: [
-        { value: "pull", label: "Pull", hint: "overwrite local with remote" },
-        { value: "push", label: "Push", hint: "overwrite remote with local" },
-        { value: "skip", label: "Skip" },
-      ],
-    });
-
-    if (p.isCancel(action)) continue;
-    if (action === "pull") toPull.push(path);
-    if (action === "push") toPush.push(path);
-  }
-
-  // show summary and confirm
+  // summary
   const summary: string[] = [];
-  if (toPull.length) summary.push(`${c.blue("↓")} Pull: ${toPull.length}`);
-  if (toPush.length) summary.push(`${c.yellow("↑")} Push: ${toPush.length}`);
-  if (toLink.length) summary.push(`${c.dim("○")} Link: ${toLink.length}`);
-  if (toCopy.length) summary.push(`${c.cyan("→")} Copy: ${toCopy.length}`);
+  if (toPush.length) summary.push(`${c.yellow("↑")} Push ${toPush.length}`);
+  if (toPull.length) summary.push(`${c.blue("↓")} Pull ${toPull.length}`);
+  if (toLink.length) summary.push(`${c.dim("○")} Link ${toLink.length}`);
 
   if (summary.length === 0) {
     p.outro(c.dim("Nothing to do"));
     return;
   }
 
-  p.log.message("");
   p.log.message(summary.join("  "));
 
   const confirm = await p.confirm({
@@ -198,10 +223,9 @@ async function main() {
     return;
   }
 
-  // execute actions
+  // execute
   const spin = p.spinner();
 
-  // 1. Pull first
   if (toPull.length) {
     spin.start("Pulling...");
     await pullRepo();
@@ -211,17 +235,15 @@ async function main() {
     spin.stop(`${c.blue("↓")} Pulled ${toPull.length} files`);
   }
 
-  // 2. Push
   if (toPush.length) {
     spin.start("Pushing...");
     for (const path of toPush) {
-      await copyToRepo(path);
+      await copyToRepo(path, HOME);
     }
     await pushRepo(`update ${toPush.length} files`);
     spin.stop(`${c.yellow("↑")} Pushed ${toPush.length} files`);
   }
 
-  // 3. Link
   if (toLink.length) {
     spin.start("Linking...");
     for (const path of toLink) {
@@ -230,9 +252,173 @@ async function main() {
     spin.stop(`${c.dim("○")} Linked ${toLink.length} files`);
   }
 
-  // 4. Copy to project
+  p.outro(c.green("Done!"));
+}
+
+function getGlobalHint(status: FileStatus): string | undefined {
+  switch (status) {
+    case "local":
+      return "push";
+    case "remote":
+      return "pull";
+    case "unlinked":
+      return "link";
+    case "conflict":
+      return "conflict";
+    default:
+      return undefined;
+  }
+}
+
+// =============================================================================
+// LOCAL MODE: Copy dotfiles to/from current project
+// =============================================================================
+
+async function runLocalMode(cwd: string) {
+  const s = p.spinner();
+  s.start("Checking status...");
+
+  // get files comparing cwd vs repo
+  const files = await getAllTrackedFiles(cwd);
+
+  // update statuses based on git remote changes
+  const remoteChanges = await getRemoteChanges();
+  const localChanges = await getLocalChanges();
+
+  for (const f of files) {
+    if (remoteChanges.includes(f.path) && localChanges.includes(f.path)) {
+      f.status = "conflict";
+    } else if (remoteChanges.includes(f.path)) {
+      f.status = "remote";
+    } else if (localChanges.includes(f.path)) {
+      f.status = "local";
+    }
+  }
+
+  s.stop("Status loaded");
+
+  // build options grouped by category
+  const options: Record<string, { value: string; label: string; hint?: string }[]> = {};
+  const initialValues: string[] = [];
+
+  for (const cat of categories) {
+    const catFiles = files.filter((f) => f.category === cat.name);
+    if (catFiles.length === 0) continue;
+
+    options[cat.name] = catFiles.map((f) => {
+      const icon = statusIcon[f.status];
+
+      // pre-select files that need action (not synced/unlinked)
+      if (f.status === "local" || f.status === "remote" || f.status === "conflict") {
+        initialValues.push(f.path);
+      }
+
+      return {
+        value: f.path,
+        label: `${icon} ${f.path}`,
+        hint: getLocalHint(f.status),
+      };
+    });
+  }
+
+  // show legend
+  p.log.message(
+    c.dim(
+      `${statusIcon.synced} synced  ${statusIcon.local} push  ${statusIcon.remote} pull  ${statusIcon.conflict} conflict  ${statusIcon.unlinked} copy`
+    )
+  );
+
+  // file selection
+  const selected = await p.groupMultiselect({
+    message: "Select files",
+    options,
+    initialValues,
+    required: false,
+    groupSpacing: 1,
+  });
+
+  if (p.isCancel(selected) || !selected || selected.length === 0) {
+    p.outro(c.dim("Nothing to do"));
+    return;
+  }
+
+  const selectedFiles = selected as string[];
+
+  // categorize by action
+  const toPush: string[] = [];
+  const toCopy: string[] = []; // copy from repo to project
+
+  for (const path of selectedFiles) {
+    const file = files.find((f) => f.path === path);
+    if (!file) continue;
+
+    switch (file.status) {
+      case "local":
+        // project file differs from repo → push to repo
+        toPush.push(path);
+        break;
+      case "remote":
+        // repo has newer version → copy to project
+        toCopy.push(path);
+        break;
+      case "synced":
+      case "unlinked":
+        // copy from repo to project
+        toCopy.push(path);
+        break;
+      case "conflict":
+        // ask user for each conflict
+        const action = await p.select({
+          message: `${c.red("⚡")} ${path} — keep which version?`,
+          options: [
+            { value: "push", label: "Local", hint: "push to repo" },
+            { value: "copy", label: "Remote", hint: "overwrite local" },
+            { value: "skip", label: "Skip" },
+          ],
+        });
+        if (p.isCancel(action)) continue;
+        if (action === "push") toPush.push(path);
+        if (action === "copy") toCopy.push(path);
+        break;
+    }
+  }
+
+  // summary
+  const summary: string[] = [];
+  if (toPush.length) summary.push(`${c.yellow("↑")} Push ${toPush.length}`);
+  if (toCopy.length) summary.push(`${c.cyan("→")} Copy ${toCopy.length}`);
+
+  if (summary.length === 0) {
+    p.outro(c.dim("Nothing to do"));
+    return;
+  }
+
+  p.log.message(summary.join("  "));
+
+  const confirm = await p.confirm({
+    message: "Proceed?",
+    initialValue: true,
+  });
+
+  if (p.isCancel(confirm) || !confirm) {
+    p.outro(c.dim("Cancelled"));
+    return;
+  }
+
+  // execute
+  const spin = p.spinner();
+
+  if (toPush.length) {
+    spin.start("Pushing...");
+    for (const path of toPush) {
+      await copyToRepo(path, cwd);
+    }
+    await pushRepo(`update ${toPush.length} files`);
+    spin.stop(`${c.yellow("↑")} Pushed ${toPush.length} files`);
+  }
+
   if (toCopy.length) {
-    spin.start("Copying to project...");
+    spin.start("Copying...");
     for (const path of toCopy) {
       await copyFromRepo(path, cwd);
     }
@@ -242,20 +428,22 @@ async function main() {
   p.outro(c.green("Done!"));
 }
 
-function getHint(status: FileStatus, inProject: boolean): string | undefined {
+function getLocalHint(status: FileStatus): string | undefined {
   switch (status) {
     case "local":
-      return inProject ? "copy to project" : "will push";
+      return "push";
     case "remote":
-      return "will pull";
+      return "pull";
     case "unlinked":
-      return inProject ? "copy to project" : "will link";
+      return "copy";
     case "conflict":
-      return "needs resolve";
+      return "conflict";
     default:
       return undefined;
   }
 }
+
+// =============================================================================
 
 main().catch((e) => {
   p.log.error(e.message);
