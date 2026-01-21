@@ -258,20 +258,43 @@ async function handleLink(files: FileInfo[]) {
 }
 
 async function handleCopyToProject(files: FileInfo[], targetDir: string) {
-  // only show claude files for project copy
-  const claudeFiles = files.filter((f) => f.category === "Claude");
+  // step 1: optional search filter
+  const search = await p.text({
+    message: "Search files (or Enter to browse all)",
+    placeholder: "e.g. claude, zsh, config...",
+  });
 
-  if (claudeFiles.length === 0) {
-    p.log.warn("No Claude files to copy");
+  if (p.isCancel(search)) return;
+
+  // filter files based on search
+  const query = (search || "").toLowerCase().trim();
+  const filtered = query
+    ? files.filter(
+        (f) =>
+          f.path.toLowerCase().includes(query) ||
+          f.category.toLowerCase().includes(query)
+      )
+    : files;
+
+  if (filtered.length === 0) {
+    p.log.warn(`No files matching "${query}"`);
     return;
   }
 
-  const selected = await p.multiselect({
-    message: "Select files to copy to project",
-    options: claudeFiles.map((f) => ({
+  // step 2: grouped multi-select with filtered results
+  const options: Record<string, { value: string; label: string }[]> = {};
+  for (const cat of categories) {
+    const catFiles = filtered.filter((f) => f.category === cat.name);
+    if (catFiles.length === 0) continue;
+    options[cat.name] = catFiles.map((f) => ({
       value: f.path,
       label: f.path,
-    })),
+    }));
+  }
+
+  const selected = await p.groupMultiselect({
+    message: "Select files to copy",
+    options,
     required: false,
   });
 
