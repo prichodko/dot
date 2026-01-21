@@ -63,252 +63,186 @@ async function main() {
     }
   }
 
-  // show status grouped by category
-  p.log.message(c.dim(`~/.config/dotfiles (${DOTFILES_REPO})`));
-  p.log.message("");
-
-  const byCategory = new Map<string, FileInfo[]>();
-  for (const f of files) {
-    const list = byCategory.get(f.category) || [];
-    list.push(f);
-    byCategory.set(f.category, list);
-  }
-
-  for (const [cat, catFiles] of byCategory) {
-    p.log.message(c.bold(cat));
-    for (const f of catFiles) {
-      p.log.message(`  ${statusIcon[f.status]} ${f.path}`);
-    }
-  }
-
-  p.log.message("");
-  p.log.message(
-    c.dim(`${statusIcon.synced} synced  ${statusIcon.local} local  ${statusIcon.remote} remote  ${statusIcon.conflict} conflict  ${statusIcon.unlinked} unlinked`)
-  );
-
   // check if in a project (not home)
   const cwd = process.cwd();
   const inProject = cwd !== HOME && !cwd.startsWith(DOTFILES_DIR);
 
-  // action menu
-  const action = await p.select({
-    message: "What to do?",
-    options: [
-      { value: "pull", label: "Pull", hint: "download from repo" },
-      { value: "push", label: "Push", hint: "upload local changes" },
-      { value: "link", label: "Link", hint: "symlink unlinked files" },
-      ...(inProject
-        ? [{ value: "copy", label: "Copy to project", hint: cwd }]
-        : []),
-      { value: "exit", label: "Exit" },
-    ],
-  });
-
-  if (p.isCancel(action) || action === "exit") {
-    p.outro(c.dim("Bye!"));
+  // check if all synced
+  const hasChanges = files.some((f) => f.status !== "synced");
+  if (!hasChanges) {
+    p.log.success("Everything up to date!");
+    p.outro(c.dim(`~/.dotfiles (${DOTFILES_REPO})`));
     return;
   }
 
-  if (action === "pull") {
-    await handlePull(files, inProject ? cwd : undefined);
-  } else if (action === "push") {
-    await handlePush(files, localChanges);
-  } else if (action === "link") {
-    await handleLink(files);
-  } else if (action === "copy") {
-    await handleCopyToProject(files, cwd);
+  // build options with status icons, pre-select changed files
+  const options: Record<string, { value: string; label: string; hint?: string }[]> = {};
+  const initialValues: string[] = [];
+
+  for (const cat of categories) {
+    const catFiles = files.filter((f) => f.category === cat.name);
+    if (catFiles.length === 0) continue;
+
+    options[cat.name] = catFiles.map((f) => {
+      const icon = statusIcon[f.status];
+      const hint = getHint(f.status, inProject);
+      
+      // pre-select changed files
+      if (f.status !== "synced") {
+        initialValues.push(f.path);
+      }
+
+      return {
+        value: f.path,
+        label: `${icon} ${f.path}`,
+        hint,
+      };
+    });
+  }
+
+  p.log.message(c.dim(`~/.dotfiles (${DOTFILES_REPO})`));
+
+  // combined status + selection
+  const selected = await p.groupMultiselect({
+    message: "Select files to sync",
+    options,
+    initialValues,
+    required: false,
+  });
+
+  if (p.isCancel(selected) || !selected || selected.length === 0) {
+    p.outro(c.dim("Nothing to do"));
+    return;
+  }
+
+  // categorize selected files by action
+  const toPush: string[] = [];
+  const toPull: string[] = [];
+  const toLink: string[] = [];
+  const conflicts: string[] = [];
+  const toCopy: string[] = [];
+
+  for (const path of selected as string[]) {
+    const file = files.find((f) => f.path === path);
+    if (!file) continue;
+
+    if (file.status === "local") {
+      if (inProject) {
+        toCopy.push(path);
+      } else {
+        toPush.push(path);
+      }
+    } else if (file.status === "remote") {
+      toPull.push(path);
+    } else if (file.status === "unlinked") {
+      if (inProject) {
+        toCopy.push(path);
+      } else {
+        toLink.push(path);
+      }
+    } else if (file.status === "conflict") {
+      conflicts.push(path);
+    }
+  }
+
+  // handle conflicts - ask for each
+  for (const path of conflicts) {
+    const action = await p.select({
+      message: `${c.red("!")} ${path} has conflicts. What to do?`,
+      options: [
+        { value: "pull", label: "Pull", hint: "overwrite local with remote" },
+        { value: "push", label: "Push", hint: "overwrite remote with local" },
+        { value: "skip", label: "Skip" },
+      ],
+    });
+
+    if (p.isCancel(action)) continue;
+    if (action === "pull") toPull.push(path);
+    if (action === "push") toPush.push(path);
+  }
+
+  // show summary and confirm
+  const summary: string[] = [];
+  if (toPull.length) summary.push(`${c.blue("↓")} Pull: ${toPull.length}`);
+  if (toPush.length) summary.push(`${c.yellow("↑")} Push: ${toPush.length}`);
+  if (toLink.length) summary.push(`${c.dim("○")} Link: ${toLink.length}`);
+  if (toCopy.length) summary.push(`${c.cyan("→")} Copy: ${toCopy.length}`);
+
+  if (summary.length === 0) {
+    p.outro(c.dim("Nothing to do"));
+    return;
+  }
+
+  p.log.message("");
+  p.log.message(summary.join("  "));
+
+  const confirm = await p.confirm({
+    message: "Proceed?",
+    initialValue: true,
+  });
+
+  if (p.isCancel(confirm) || !confirm) {
+    p.outro(c.dim("Cancelled"));
+    return;
+  }
+
+  // execute actions
+  const spin = p.spinner();
+
+  // 1. Pull first
+  if (toPull.length) {
+    spin.start("Pulling...");
+    await pullRepo();
+    for (const path of toPull) {
+      await linkFile(path);
+    }
+    spin.stop(`${c.blue("↓")} Pulled ${toPull.length} files`);
+  }
+
+  // 2. Push
+  if (toPush.length) {
+    spin.start("Pushing...");
+    for (const path of toPush) {
+      await copyToRepo(path);
+    }
+    await pushRepo(`update ${toPush.length} files`);
+    spin.stop(`${c.yellow("↑")} Pushed ${toPush.length} files`);
+  }
+
+  // 3. Link
+  if (toLink.length) {
+    spin.start("Linking...");
+    for (const path of toLink) {
+      await linkFile(path);
+    }
+    spin.stop(`${c.dim("○")} Linked ${toLink.length} files`);
+  }
+
+  // 4. Copy to project
+  if (toCopy.length) {
+    spin.start("Copying to project...");
+    for (const path of toCopy) {
+      await copyFromRepo(path, cwd);
+    }
+    spin.stop(`${c.cyan("→")} Copied ${toCopy.length} files`);
   }
 
   p.outro(c.green("Done!"));
 }
 
-async function handlePull(files: FileInfo[], targetDir?: string) {
-  // build options grouped by category
-  const options: Record<string, { value: string; label: string; hint?: string }[]> = {};
-  for (const cat of categories) {
-    const catFiles = files.filter((f) => f.category === cat.name);
-    if (catFiles.length === 0) continue;
-    options[cat.name] = catFiles.map((f) => ({
-      value: f.path,
-      label: f.path,
-      hint: f.status !== "synced" ? f.status : undefined,
-    }));
+function getHint(status: FileStatus, inProject: boolean): string | undefined {
+  switch (status) {
+    case "local":
+      return inProject ? "copy to project" : "will push";
+    case "remote":
+      return "will pull";
+    case "unlinked":
+      return inProject ? "copy to project" : "will link";
+    case "conflict":
+      return "needs resolve";
+    default:
+      return undefined;
   }
-
-  const selected = await p.groupMultiselect({
-    message: "Select files to pull",
-    options,
-    required: false,
-  });
-
-  if (p.isCancel(selected) || !selected || selected.length === 0) {
-    p.log.warn("Nothing selected");
-    return;
-  }
-
-  // pull repo first
-  const s = p.spinner();
-  s.start("Pulling from remote...");
-  await pullRepo();
-  s.stop("Pulled latest");
-
-  // copy/link files
-  s.start("Syncing files...");
-  for (const path of selected as string[]) {
-    if (targetDir) {
-      await copyFromRepo(path, targetDir);
-    } else {
-      await linkFile(path);
-    }
-  }
-  s.stop(`Synced ${(selected as string[]).length} files`);
-}
-
-async function handlePush(files: FileInfo[], localChanges: string[]) {
-  const changedFiles = files.filter(
-    (f) => f.status === "local" || localChanges.includes(f.path)
-  );
-
-  if (changedFiles.length === 0) {
-    p.log.warn("No local changes to push");
-    return;
-  }
-
-  const options: Record<string, { value: string; label: string }[]> = {};
-  for (const cat of categories) {
-    const catFiles = changedFiles.filter((f) => f.category === cat.name);
-    if (catFiles.length === 0) continue;
-    options[cat.name] = catFiles.map((f) => ({
-      value: f.path,
-      label: f.path,
-    }));
-  }
-
-  const selected = await p.groupMultiselect({
-    message: "Select files to push",
-    options,
-    required: false,
-  });
-
-  if (p.isCancel(selected) || !selected || selected.length === 0) {
-    p.log.warn("Nothing selected");
-    return;
-  }
-
-  // copy files to repo
-  const s = p.spinner();
-  s.start("Copying to repo...");
-  for (const path of selected as string[]) {
-    await copyToRepo(path);
-  }
-  s.stop("Copied files");
-
-  // commit message
-  const message = await p.text({
-    message: "Commit message",
-    placeholder: "update dotfiles",
-  });
-
-  if (p.isCancel(message)) return;
-
-  s.start("Pushing to GitHub...");
-  const ok = await pushRepo(message || "update dotfiles");
-  if (ok) {
-    s.stop(c.green("Pushed to GitHub"));
-  } else {
-    s.stop(c.red("Failed to push"));
-  }
-}
-
-async function handleLink(files: FileInfo[]) {
-  const unlinked = files.filter((f) => f.status === "unlinked");
-
-  if (unlinked.length === 0) {
-    p.log.warn("All files already linked");
-    return;
-  }
-
-  const options: Record<string, { value: string; label: string }[]> = {};
-  for (const cat of categories) {
-    const catFiles = unlinked.filter((f) => f.category === cat.name);
-    if (catFiles.length === 0) continue;
-    options[cat.name] = catFiles.map((f) => ({
-      value: f.path,
-      label: f.path,
-    }));
-  }
-
-  const selected = await p.groupMultiselect({
-    message: "Select files to link",
-    options,
-    required: false,
-  });
-
-  if (p.isCancel(selected) || !selected || selected.length === 0) {
-    p.log.warn("Nothing selected");
-    return;
-  }
-
-  const s = p.spinner();
-  s.start("Linking files...");
-  for (const path of selected as string[]) {
-    await linkFile(path);
-  }
-  s.stop(`Linked ${(selected as string[]).length} files`);
-}
-
-async function handleCopyToProject(files: FileInfo[], targetDir: string) {
-  // step 1: optional search filter
-  const search = await p.text({
-    message: "Search files (or Enter to browse all)",
-    placeholder: "e.g. claude, zsh, config...",
-  });
-
-  if (p.isCancel(search)) return;
-
-  // filter files based on search
-  const query = (search || "").toLowerCase().trim();
-  const filtered = query
-    ? files.filter(
-        (f) =>
-          f.path.toLowerCase().includes(query) ||
-          f.category.toLowerCase().includes(query)
-      )
-    : files;
-
-  if (filtered.length === 0) {
-    p.log.warn(`No files matching "${query}"`);
-    return;
-  }
-
-  // step 2: grouped multi-select with filtered results
-  const options: Record<string, { value: string; label: string }[]> = {};
-  for (const cat of categories) {
-    const catFiles = filtered.filter((f) => f.category === cat.name);
-    if (catFiles.length === 0) continue;
-    options[cat.name] = catFiles.map((f) => ({
-      value: f.path,
-      label: f.path,
-    }));
-  }
-
-  const selected = await p.groupMultiselect({
-    message: "Select files to copy",
-    options,
-    required: false,
-  });
-
-  if (p.isCancel(selected) || !selected || selected.length === 0) {
-    p.log.warn("Nothing selected");
-    return;
-  }
-
-  const s = p.spinner();
-  s.start("Copying to project...");
-  for (const path of selected as string[]) {
-    await copyFromRepo(path, targetDir);
-  }
-  s.stop(`Copied ${(selected as string[]).length} files to ${targetDir}`);
 }
 
 main().catch((e) => {
