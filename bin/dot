@@ -16,8 +16,9 @@ if [[ ! -t 0 ]] && [[ -z "$DOT_INSTALLED" ]]; then
   mkdir -p ~/.local/bin
   curl -fsSL https://raw.githubusercontent.com/prichodko/dot/main/bin/dot > ~/.local/bin/dot
   chmod +x ~/.local/bin/dot
-  export DOT_INSTALLED=1
-  exec ~/.local/bin/dot "$@"
+  echo "installed to ~/.local/bin/dot"
+  echo "ensure ~/.local/bin is in your PATH"
+  exit 0
 fi
 
 DOTFILES_DIR="$HOME/.dotfiles"

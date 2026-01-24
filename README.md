@@ -14,7 +14,13 @@ dot rm <file>          - untrack a file (restore to home)
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/prichodko/dot/main/bin/dot | bash -s init <github-url>
+curl -fsSL https://raw.githubusercontent.com/prichodko/dot/main/bin/dot | bash
+```
+
+Then initialize with your dotfiles repo:
+
+```bash
+dot init <github-url>
 ```
 
 ## Tip
