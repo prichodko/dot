@@ -24,3 +24,9 @@ Alias to `.` for quick access:
 ```bash
 alias .="dot"
 ```
+
+Ensure `~/.local/bin` is in your PATH:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```

@@ -7,18 +7,18 @@
 #   dot rm <file>          - untrack a file (restore to home)
 #
 # Install:
-#   curl -fsSL https://raw.githubusercontent.com/user/dot/main/dot | bash -s init <github-url>
+#   curl -fsSL https://raw.githubusercontent.com/prichodko/dot/main/bin/dot | bash -s init <github-url>
 
 set -e
 
 # Self-install if being piped
-# if [[ ! -t 0 ]] && [[ -z "$DOT_INSTALLED" ]]; then
-#   mkdir -p ~/.local/bin
-#   cat > ~/.local/bin/dot
-#   chmod +x ~/.local/bin/dot
-#   export DOT_INSTALLED=1
-#   exec ~/.local/bin/dot "$@"
-# fi
+if [[ ! -t 0 ]] && [[ -z "$DOT_INSTALLED" ]]; then
+  mkdir -p ~/.local/bin
+  curl -fsSL https://raw.githubusercontent.com/prichodko/dot/main/bin/dot > ~/.local/bin/dot
+  chmod +x ~/.local/bin/dot
+  export DOT_INSTALLED=1
+  exec ~/.local/bin/dot "$@"
+fi
 
 DOTFILES_DIR="$HOME/.dotfiles"
 
