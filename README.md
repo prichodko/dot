@@ -1,6 +1,6 @@
 # dot
 
-Dotfiles manager
+bash tool to manage dotfiles via git + symlinks
 
 ## Usage
 
