@@ -205,7 +205,7 @@ scan_dotfiles() {
     -not -path "$DOTFILES_DIR/.git/*" \
     -not -name ".DS_Store" \
     -not -name "README.md" \
-    -not -name "Brewfile" \
+    -not -name ".brewfile" \
     -not -name "*.sh" \
     -not -path "$DOTFILES_DIR/bin/*" \
     | while read -r file; do
