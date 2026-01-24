@@ -14,7 +14,7 @@ dot rm <file>          - untrack a file (restore to home)
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/user/dot/main/dot | bash -s init <github-url>
+curl -fsSL https://raw.githubusercontent.com/prichodko/dot/main/bin/dot | bash -s init <github-url>
 ```
 
 ## Tip
