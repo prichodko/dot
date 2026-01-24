@@ -1,0 +1,742 @@
+#!/bin/bash
+# Dotfiles manager
+# Usage:
+#   dot init <github-url>  - clone repo + set up symlinks
+#   dot                    - pull latest + show status + fix issues
+#   dot <file>             - track a file (move to repo + symlink)
+#   dot rm <file>          - untrack a file (restore to home)
+#
+# Install:
+#   curl -fsSL https://raw.githubusercontent.com/user/dot/main/dot | bash -s init <github-url>
+
+set -e
+
+# Self-install if being piped
+# if [[ ! -t 0 ]] && [[ -z "$DOT_INSTALLED" ]]; then
+#   mkdir -p ~/.local/bin
+#   cat > ~/.local/bin/dot
+#   chmod +x ~/.local/bin/dot
+#   export DOT_INSTALLED=1
+#   exec ~/.local/bin/dot "$@"
+# fi
+
+DOTFILES_DIR="$HOME/.dotfiles"
+
+# ============================================
+# Colors & Styles
+# ============================================
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+CYAN='\033[0;36m'
+GRAY='\033[0;90m'
+NC='\033[0m'
+BOLD='\033[1m'
+DIM='\033[2m'
+
+# Symbols
+T="  "
+S_BAR="${GRAY}│${NC}"
+S_CORNER_TOP="${GRAY}┌${NC}"
+S_CORNER_BOT="${GRAY}└─${NC}"
+S_BRANCH="${GRAY}├─${NC}"
+S_CHECK="${GREEN}✓${NC}"
+S_WARN="${YELLOW}▲${NC}"
+S_ERROR="${RED}✗${NC}"
+
+# Spinner frames
+SPINNER=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+
+# Track if we're on the last section
+IS_LAST=false
+
+# ============================================
+# UI Helpers
+# ============================================
+
+section() {
+  local desc="$1"
+  local is_last="${2:-false}"
+  
+  IS_LAST=$is_last
+  
+  printf "${T}${S_BAR}\n"
+  if [[ "$is_last" == "true" ]]; then
+    printf "${T}${S_CORNER_BOT} ${desc}\n"
+  else
+    printf "${T}${S_BRANCH} ${desc}\n"
+  fi
+}
+
+bar_prefix() {
+  if [[ "$IS_LAST" == "true" ]]; then
+    printf "${T}   "
+  else
+    printf "${T}${S_BAR}  "
+  fi
+}
+
+check() {
+  printf "$(bar_prefix)${S_CHECK} $1\n"
+}
+
+warn() {
+  printf "$(bar_prefix)${S_WARN} $1\n"
+}
+
+error() {
+  printf "$(bar_prefix)${S_ERROR} $1\n"
+}
+
+info() {
+  printf "$(bar_prefix)$1\n"
+}
+
+prompt_yn() {
+  local msg="$1"
+  printf "$(bar_prefix)\n"
+  printf "$(bar_prefix)${msg}\n"
+  printf "$(bar_prefix)${DIM}[y/n]${NC} "
+  read -r -n 1 response </dev/tty
+  printf "\n"
+  [[ "$response" =~ ^[yY]$ ]]
+}
+
+prompt_choice() {
+  local msg="$1"
+  shift
+  local options=("$@")
+  
+  printf "$(bar_prefix)\n"
+  printf "$(bar_prefix)${msg}\n"
+  printf "$(bar_prefix)${DIM}"
+  for opt in "${options[@]}"; do
+    printf "[%s]%s  " "${opt:0:1}" "${opt:1}"
+  done
+  printf "${NC}"
+  read -r -n 1 CHOICE </dev/tty
+  printf "\n"
+}
+
+spin() {
+  local msg="$1"
+  local pid=$2
+  local i=0
+  local prefix=$(bar_prefix)
+  
+  while kill -0 "$pid" 2>/dev/null; do
+    printf "\r${prefix}${CYAN}${SPINNER[$i]}${NC} ${msg}"
+    i=$(( (i + 1) % ${#SPINNER[@]} ))
+    sleep 0.08
+  done
+  printf "\r${prefix}${S_CHECK} ${msg}\n"
+}
+
+intro() {
+  clear
+  printf "\n"
+  printf "${T}${S_CORNER_TOP}  ${BOLD}dotfiles${NC}\n"
+}
+
+outro() {
+  local msg="${1:-done}"
+  printf "${T}${S_BAR}\n"
+  printf "${T}${S_CORNER_BOT} ${GREEN}${msg}${NC}\n"
+  printf "\n"
+}
+
+# ============================================
+# Helpers
+# ============================================
+
+# Get relative path from home (e.g., ~/.config/foo -> .config/foo)
+get_rel_path() {
+  local file="$1"
+  local abs_path
+  
+  # Resolve to absolute path
+  if [[ "$file" == /* ]]; then
+    abs_path="$file"
+  elif [[ "$file" == ~* ]]; then
+    abs_path="${file/#\~/$HOME}"
+  else
+    abs_path="$(cd "$(dirname "$file")" && pwd)/$(basename "$file")"
+  fi
+  
+  # Remove $HOME prefix
+  echo "${abs_path#$HOME/}"
+}
+
+# Get repo path for a file
+get_repo_path() {
+  local rel_path="$1"
+  echo "$DOTFILES_DIR/$rel_path"
+}
+
+# Get home path for a file
+get_home_path() {
+  local rel_path="$1"
+  echo "$HOME/$rel_path"
+}
+
+# Check if file is tracked (symlink pointing to dotfiles)
+is_tracked() {
+  local home_path="$1"
+  
+  if [[ -L "$home_path" ]]; then
+    local target
+    target=$(readlink "$home_path")
+    [[ "$target" == "$DOTFILES_DIR"* ]]
+  else
+    return 1
+  fi
+}
+
+# Recursively find all files in dotfiles repo
+# Excludes repo-only files that shouldn't be symlinked
+scan_dotfiles() {
+  find "$DOTFILES_DIR" -type f \
+    -not -path "$DOTFILES_DIR/.git/*" \
+    -not -name ".DS_Store" \
+    -not -name "README.md" \
+    -not -name "Brewfile" \
+    -not -name "*.sh" \
+    -not -path "$DOTFILES_DIR/bin/*" \
+    | while read -r file; do
+    echo "${file#$DOTFILES_DIR/}"
+  done
+}
+
+# ============================================
+# Git Operations
+# ============================================
+
+git_pull() {
+  section "pull latest"
+  
+  # Fetch first
+  git -C "$DOTFILES_DIR" fetch --quiet 2>/dev/null || true
+  
+  # Check if we're behind, ahead, or diverged
+  local local_ref remote_ref base_ref
+  local_ref=$(git -C "$DOTFILES_DIR" rev-parse HEAD 2>/dev/null)
+  remote_ref=$(git -C "$DOTFILES_DIR" rev-parse @{u} 2>/dev/null) || {
+    warn "no upstream branch"
+    return 0
+  }
+  base_ref=$(git -C "$DOTFILES_DIR" merge-base HEAD @{u} 2>/dev/null)
+  
+  if [[ "$local_ref" == "$remote_ref" ]]; then
+    check "already up to date"
+  elif [[ "$local_ref" == "$base_ref" ]]; then
+    # We're behind, can fast-forward
+    if git -C "$DOTFILES_DIR" pull --ff-only &>/dev/null; then
+      check "updated"
+    else
+      error "pull failed"
+      return 1
+    fi
+  elif [[ "$remote_ref" == "$base_ref" ]]; then
+    # We're ahead
+    check "ahead of remote (nothing to pull)"
+  else
+    # Diverged
+    warn "local and remote have diverged"
+    warn "resolve manually: cd ~/.dotfiles && git status"
+  fi
+}
+
+# ============================================
+# Init (Clone + Setup)
+# ============================================
+
+do_init() {
+  local repo_url="$1"
+  
+  intro
+  section "init"
+  
+  # Check if dotfiles already exists
+  if [[ -d "$DOTFILES_DIR" ]]; then
+    error "~/.dotfiles already exists"
+    outro "failed"
+    exit 1
+  fi
+  
+  # Clone the repo
+  info "${DIM}cloning $repo_url...${NC}"
+  if git clone "$repo_url" "$DOTFILES_DIR" &>/dev/null; then
+    check "cloned to ~/.dotfiles"
+  else
+    error "failed to clone"
+    outro "failed"
+    exit 1
+  fi
+  
+  # Link all dotfiles
+  section "linking"
+  
+  local linked=0
+  local issues=()
+  
+  while IFS= read -r rel_path; do
+    local repo_path="$DOTFILES_DIR/$rel_path"
+    local home_path="$HOME/$rel_path"
+    
+    if [[ -L "$home_path" ]]; then
+      # Already a symlink
+      local target
+      target=$(readlink "$home_path")
+      if [[ "$target" == "$repo_path" ]]; then
+        check "$rel_path"
+        ((linked++))
+      else
+        warn "$rel_path ${DIM}(linked elsewhere)${NC}"
+        issues+=("$rel_path:wrong_link")
+      fi
+    elif [[ -e "$home_path" ]]; then
+      # File exists locally
+      warn "$rel_path ${DIM}(exists locally)${NC}"
+      issues+=("$rel_path:conflict")
+    else
+      # No conflict, just link
+      mkdir -p "$(dirname "$home_path")"
+      ln -sf "$repo_path" "$home_path"
+      check "$rel_path"
+      ((linked++))
+    fi
+  done < <(scan_dotfiles)
+  
+  # Handle conflicts
+  if [[ ${#issues[@]} -gt 0 ]]; then
+    for issue in "${issues[@]}"; do
+      local rel_path="${issue%:*}"
+      local issue_type="${issue##*:}"
+      local repo_path="$DOTFILES_DIR/$rel_path"
+      local home_path="$HOME/$rel_path"
+      
+      printf "$(bar_prefix)\n"
+      printf "${T}${S_BRANCH} ${BOLD}$rel_path${NC}\n"
+      
+      prompt_choice "file exists locally" overwrite backup resolve skip
+      case "$CHOICE" in
+        o) # Overwrite local with repo
+          rm -rf "$home_path"
+          ln -sf "$repo_path" "$home_path"
+          check "linked (overwrote local)"
+          ((linked++))
+          ;;
+        b) # Backup local & link
+          mv "$home_path" "$home_path.bak"
+          ln -sf "$repo_path" "$home_path"
+          check "linked (backed up to .bak)"
+          ((linked++))
+          ;;
+        r) # Resolve in VS Code
+          resolve_conflict "$home_path" "$repo_path"
+          ((linked++))
+          ;;
+        *) # Skip
+          warn "skipped"
+          ;;
+      esac
+    done
+  fi
+  
+  outro "done - $linked files linked"
+  
+  # Remind about PATH
+  printf "${T}   ${DIM}add to your shell rc:${NC}\n"
+  printf "${T}   ${DIM}export PATH=\"\$HOME/.dotfiles/bin:\$PATH\"${NC}\n"
+  printf "\n"
+}
+
+# ============================================
+# Status & Fix
+# ============================================
+
+do_default() {
+  intro
+  
+  # Pull latest
+  git_pull || { outro "pull failed"; exit 1; }
+  
+  # Scan and check status
+  section "status"
+  
+  local issues=()
+  local tracked=0
+  
+  while IFS= read -r rel_path; do
+    local repo_path="$DOTFILES_DIR/$rel_path"
+    local home_path="$HOME/$rel_path"
+    
+    if [[ -L "$home_path" ]]; then
+      local target
+      target=$(readlink "$home_path")
+      if [[ "$target" == "$repo_path" ]]; then
+        check "$rel_path"
+        ((tracked++))
+      else
+        warn "$rel_path ${DIM}(linked to: $target)${NC}"
+        issues+=("$rel_path:wrong_link")
+      fi
+    elif [[ -e "$home_path" ]]; then
+      warn "$rel_path ${DIM}(exists locally, not linked)${NC}"
+      issues+=("$rel_path:conflict")
+    else
+      error "$rel_path ${DIM}(not linked)${NC}"
+      issues+=("$rel_path:not_linked")
+    fi
+  done < <(scan_dotfiles)
+  
+  # Handle issues
+  if [[ ${#issues[@]} -gt 0 ]]; then
+    if prompt_yn "${#issues[@]} file(s) have issues. fix?"; then
+      # Fix each issue
+      for issue in "${issues[@]}"; do
+        local rel_path="${issue%:*}"
+        local issue_type="${issue##*:}"
+        local repo_path="$DOTFILES_DIR/$rel_path"
+        local home_path="$HOME/$rel_path"
+        
+        printf "$(bar_prefix)\n"
+        printf "${T}${S_BRANCH} ${BOLD}$rel_path${NC}\n"
+        
+        case "$issue_type" in
+          not_linked)
+            # Just create symlink
+            mkdir -p "$(dirname "$home_path")"
+            ln -sf "$repo_path" "$home_path"
+            check "linked"
+            ;;
+          wrong_link)
+            # Ask what to do
+            prompt_choice "symlink points elsewhere" overwrite backup resolve skip
+            case "$CHOICE" in
+              o) # Overwrite - relink to dotfiles
+                rm "$home_path"
+                ln -sf "$repo_path" "$home_path"
+                check "relinked"
+                ;;
+              b) # Backup & link
+                mv "$home_path" "$home_path.bak"
+                ln -sf "$repo_path" "$home_path"
+                check "backed up and linked"
+                ;;
+              r) # Resolve
+                resolve_conflict "$home_path" "$repo_path"
+                ;;
+              *) # Skip
+                warn "skipped"
+                ;;
+            esac
+            ;;
+          conflict)
+            # File exists locally and in repo
+            prompt_choice "file exists locally and in repo" overwrite backup resolve skip
+            case "$CHOICE" in
+              o) # Overwrite local with repo
+                rm "$home_path"
+                ln -sf "$repo_path" "$home_path"
+                check "overwrote local, linked to repo"
+                ;;
+              b) # Backup local & link
+                mv "$home_path" "$home_path.bak"
+                ln -sf "$repo_path" "$home_path"
+                check "backed up local, linked to repo"
+                ;;
+              r) # Resolve in VS Code
+                resolve_conflict "$home_path" "$repo_path"
+                ;;
+              *) # Skip
+                warn "skipped"
+                ;;
+            esac
+            ;;
+        esac
+      done
+    fi
+  fi
+  
+  # Check for uncommitted changes
+  check_and_push
+  
+  outro "done"
+}
+
+# ============================================
+# Check and Push Changes
+# ============================================
+
+check_and_push() {
+  # Get git status
+  local status_output
+  status_output=$(git -C "$DOTFILES_DIR" status --porcelain 2>/dev/null)
+  
+  # Return if no changes
+  if [[ -z "$status_output" ]]; then
+    return
+  fi
+  
+  section "changes"
+  
+  local files=()
+  
+  while IFS= read -r line; do
+    local status="${line:0:2}"
+    local file="${line:3}"
+    
+    # Determine status icon and label
+    local icon label
+    case "$status" in
+      "??"|"A "|" A") icon="${GREEN}+${NC}"; label="new" ;;
+      "M "|" M")      icon="${YELLOW}~${NC}"; label="modified" ;;
+      "D "|" D")      icon="${RED}-${NC}"; label="deleted" ;;
+      "R "*)          icon="${CYAN}→${NC}"; label="renamed"; file="${file##* -> }" ;;
+      *)              icon="${YELLOW}~${NC}"; label="changed" ;;
+    esac
+    
+    info "${icon} ${file} ${DIM}(${label})${NC}"
+    files+=("$file")
+  done <<< "$status_output"
+  
+  # Prompt to push
+  if ! prompt_yn "push changes?"; then
+    return
+  fi
+  
+  # Stage all changes
+  git -C "$DOTFILES_DIR" add -A
+  
+  # Generate commit message from file list
+  local commit_msg
+  commit_msg=$(IFS=", "; echo "${files[*]}")
+  
+  # Commit
+  git -C "$DOTFILES_DIR" commit -m "$commit_msg" &>/dev/null
+  check "committed: $commit_msg"
+  
+  # Push
+  if git -C "$DOTFILES_DIR" push &>/dev/null; then
+    check "pushed"
+  else
+    error "push failed"
+  fi
+}
+
+# ============================================
+# Resolve Conflict (VS Code Merge)
+# ============================================
+
+resolve_conflict() {
+  local local_file="$1"
+  local repo_file="$2"
+  
+  # Create temp file for merge result
+  local merged
+  merged=$(mktemp)
+  cp "$repo_file" "$merged"
+  
+  info "${DIM}opening vscode merge...${NC}"
+  
+  # Open VS Code merge: local vs repo, save to merged
+  # --wait blocks until VS Code is closed
+  code --wait --merge "$local_file" "$merged" "$repo_file" "$merged"
+  
+  # After VS Code closes, merged contains the result
+  # Move result to repo
+  mv "$merged" "$repo_file"
+  
+  # Remove local, create symlink
+  rm -f "$local_file"
+  mkdir -p "$(dirname "$local_file")"
+  ln -sf "$repo_file" "$local_file"
+  
+  # Stage the change
+  git -C "$DOTFILES_DIR" add "$repo_file"
+  
+  check "resolved and linked"
+}
+
+# ============================================
+# Track File
+# ============================================
+
+do_track() {
+  local file="$1"
+  
+  intro
+  
+  # Resolve paths
+  local rel_path
+  rel_path=$(get_rel_path "$file")
+  local repo_path="$DOTFILES_DIR/$rel_path"
+  local home_path="$HOME/$rel_path"
+  
+  section "tracking $rel_path"
+  
+  # Validate file exists
+  if [[ ! -e "$home_path" ]]; then
+    error "file does not exist: $home_path"
+    outro "failed"
+    exit 1
+  fi
+  
+  # Check if already tracked
+  if is_tracked "$home_path"; then
+    warn "already tracked"
+    outro "nothing to do"
+    return
+  fi
+  
+  # Check if symlink to elsewhere
+  if [[ -L "$home_path" ]]; then
+    local target
+    target=$(readlink "$home_path")
+    warn "file is symlink to: $target"
+    prompt_choice "track anyway? (will follow symlink)" track skip
+    if [[ "$CHOICE" != "t" ]]; then
+      outro "cancelled"
+      return
+    fi
+    # Resolve symlink to actual file
+    home_path=$(readlink -f "$home_path")
+  fi
+  
+  # Check if repo file already exists
+  if [[ -e "$repo_path" ]]; then
+    warn "file already exists in repo"
+    prompt_choice "what to do?" overwrite resolve skip
+    case "$CHOICE" in
+      o) # Overwrite repo with local
+        ;;
+      r) # Resolve
+        resolve_conflict "$home_path" "$repo_path"
+        outro "done"
+        return
+        ;;
+      *) # Skip
+        outro "cancelled"
+        return
+        ;;
+    esac
+  fi
+  
+  # Create parent dirs in repo
+  mkdir -p "$(dirname "$repo_path")"
+  
+  # Move file to repo
+  mv "$home_path" "$repo_path"
+  check "moved to repo"
+  
+  # Create symlink
+  ln -sf "$repo_path" "$home_path"
+  check "symlinked"
+  
+  # Stage for commit
+  git -C "$DOTFILES_DIR" add "$repo_path"
+  check "staged for commit"
+  
+  outro "done"
+}
+
+# ============================================
+# Untrack File (rm)
+# ============================================
+
+do_untrack() {
+  local file="$1"
+  
+  intro
+  
+  # Resolve paths
+  local rel_path
+  rel_path=$(get_rel_path "$file")
+  local repo_path="$DOTFILES_DIR/$rel_path"
+  local home_path="$HOME/$rel_path"
+  
+  section "removing $rel_path"
+  
+  # Validate it's tracked
+  if [[ ! -L "$home_path" ]]; then
+    error "not a symlink: $home_path"
+    outro "failed"
+    exit 1
+  fi
+  
+  local target
+  target=$(readlink "$home_path")
+  if [[ "$target" != "$repo_path" ]]; then
+    error "not tracked by dotfiles"
+    error "symlink points to: $target"
+    outro "failed"
+    exit 1
+  fi
+  
+  # Check repo file exists
+  if [[ ! -e "$repo_path" ]]; then
+    error "repo file missing: $repo_path"
+    outro "failed"
+    exit 1
+  fi
+  
+  # Remove symlink
+  rm "$home_path"
+  
+  # Move file back from repo
+  mkdir -p "$(dirname "$home_path")"
+  mv "$repo_path" "$home_path"
+  check "restored to $home_path"
+  
+  # Stage removal
+  git -C "$DOTFILES_DIR" add "$repo_path"
+  check "unstaged from repo"
+  
+  outro "done (commit to finalize)"
+}
+
+# ============================================
+# Main
+# ============================================
+
+not_initialized() {
+  intro
+  section "error" true
+  error "dotfiles not initialized"
+  printf "${T}   \n"
+  printf "${T}   ${DIM}run: dot init <github-url>${NC}\n"
+  printf "\n"
+  exit 1
+}
+
+main() {
+  case "${1:-}" in
+    init)
+      if [[ -z "${2:-}" ]]; then
+        echo "Usage: dot init <github-url>"
+        exit 1
+      fi
+      do_init "$2"
+      ;;
+    rm)
+      if [[ -z "${2:-}" ]]; then
+        echo "Usage: dot rm <file>"
+        exit 1
+      fi
+      [[ ! -d "$DOTFILES_DIR" ]] && not_initialized
+      do_untrack "$2"
+      ;;
+    "")
+      [[ ! -d "$DOTFILES_DIR" ]] && not_initialized
+      do_default
+      ;;
+    *)
+      [[ ! -d "$DOTFILES_DIR" ]] && not_initialized
+      do_track "$1"
+      ;;
+  esac
+}
+
+main "$@"
