@@ -16,8 +16,12 @@ if [[ ! -t 0 ]] && [[ -z "$DOT_INSTALLED" ]]; then
   mkdir -p ~/.local/bin
   curl -fsSL https://raw.githubusercontent.com/prichodko/dot/main/bin/dot > ~/.local/bin/dot
   chmod +x ~/.local/bin/dot
-  echo "installed to ~/.local/bin/dot"
-  echo "ensure ~/.local/bin is in your PATH"
+  printf "\n"
+  printf "  \033[0;90m┌\033[0m  \033[1mdot\033[0m\n"
+  printf "  \033[0;90m│\033[0m\n"
+  printf "  \033[0;90m└─\033[0m \033[0;32m✓\033[0m installed to ~/.local/bin/dot\n"
+  printf "     \033[2madd ~/.local/bin to your PATH\033[0m\n"
+  printf "\n"
   exit 0
 fi
 
