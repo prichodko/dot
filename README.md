@@ -9,6 +9,7 @@ dot init <github-url>  - clone repo + set up symlinks
 dot                    - pull latest + show status + fix issues
 dot <file>             - track a file (move to repo + symlink)
 dot rm <file>          - untrack a file (restore to home)
+dot upgrade            - upgrade dot to latest version
 ```
 
 ## Install

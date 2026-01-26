@@ -707,6 +707,31 @@ do_untrack() {
 }
 
 # ============================================
+# Upgrade
+# ============================================
+
+do_upgrade() {
+  intro
+  section "upgrade"
+  
+  local url="https://raw.githubusercontent.com/prichodko/dot/main/bin/dot"
+  local target="$HOME/.local/bin/dot"
+  
+  if curl -fsSL "$url" > "$target.tmp"; then
+    mv "$target.tmp" "$target"
+    chmod +x "$target"
+    check "upgraded"
+  else
+    rm -f "$target.tmp"
+    error "failed to download"
+    outro "failed"
+    exit 1
+  fi
+  
+  outro "done"
+}
+
+# ============================================
 # Main
 # ============================================
 
@@ -736,6 +761,9 @@ main() {
       fi
       [[ ! -d "$DOTFILES_DIR" ]] && not_initialized
       do_untrack "$2"
+      ;;
+    upgrade)
+      do_upgrade
       ;;
     "")
       [[ ! -d "$DOTFILES_DIR" ]] && not_initialized
