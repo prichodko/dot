@@ -507,9 +507,11 @@ check_and_push() {
     files+=("$file")
   done <<< "$status_output"
   
-  # Prompt to push
-  if ! prompt_yn "push changes?"; then
-    return
+  # Prompt to push (unless auto mode)
+  if [[ "${1:-}" != "auto" ]]; then
+    if ! prompt_yn "push changes?"; then
+      return
+    fi
   fi
   
   # Stage all changes
@@ -643,7 +645,9 @@ do_track() {
   # Stage for commit
   git -C "$DOTFILES_DIR" add "$repo_path"
   check "staged for commit"
-  
+
+  check_and_push auto
+
   outro "done"
 }
 
