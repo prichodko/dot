@@ -554,7 +554,7 @@ resolve_conflict() {
   
   # Open VS Code diff: local (left, reference) vs merged (right, editable)
   # --wait blocks until VS Code tab is closed
-  code --wait --diff "$local_file" "$merged"
+  zed --wait --diff "$local_file" "$merged"
   
   # Confirm before applying
   if ! prompt_yn "Apply merged result?"; then
