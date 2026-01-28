@@ -534,25 +534,35 @@ check_and_push() {
 }
 
 # ============================================
-# Resolve Conflict (VS Code Merge)
+# Resolve Conflict (VS Code Diff)
 # ============================================
 
 resolve_conflict() {
   local local_file="$1"
   local repo_file="$2"
   
-  # Create temp file for merge result
+  # Create temp file for merge result (start with repo version)
   local merged
   merged=$(mktemp)
   cp "$repo_file" "$merged"
   
-  info "${DIM}opening vscode merge...${NC}"
+  info "Opening diff view in VS Code..."
+  echo "  ${DIM}LEFT:  your local file (read-only reference)${NC}"
+  echo "  ${DIM}RIGHT: merged result (edit this to create final version)${NC}"
+  echo ""
+  echo "  ${DIM}Close the tab when done.${NC}"
   
-  # Open VS Code merge: local vs repo, save to merged
-  # --wait blocks until VS Code is closed
-  code --wait --merge "$local_file" "$merged" "$repo_file" "$merged"
+  # Open VS Code diff: local (left, reference) vs merged (right, editable)
+  # --wait blocks until VS Code tab is closed
+  code --wait --diff "$local_file" "$merged"
   
-  # After VS Code closes, merged contains the result
+  # Confirm before applying
+  if ! prompt_yn "Apply merged result?"; then
+    rm -f "$merged"
+    warn "skipped"
+    return
+  fi
+  
   # Move result to repo
   mv "$merged" "$repo_file"
   
